@@ -54,7 +54,7 @@ def get_sorted_trans_acc(trans) -> list:
     return trans_acc_sorted
 
 
-def select_trans(trans_related, trans_provided, how='first') -> list:
+def select_trans(trans_related, trans_provided, how) -> list:
     # UTA中相关的转录本与所提供的选择最新的版本, 若未提供或无交集选择查询UTA得到的第一个转录本
     if len(trans_related) == 0:
         return []
@@ -161,12 +161,8 @@ RecordAnnotation = namedtuple('RecordAnnotation', ['chrome', 'start', 'stop', 'r
 VariantRecord = namedtuple('VariantRecord', ['chrome', 'start', 'stop', 'ref', 'call', 'var_type'])
 
 
-def serial_annotate(opts):
+def serial_annotate(opts, trans_provided_no_acc):
     # 串行注释, 生成vcf格式
-    config_dic = yaml_read(opts.config)
-    trans_df = pd.read_csv(config_dic['Transcript'], sep='\t', header=None)
-    trans_provided = trans_df[0].values.tolist()
-    trans_provided_no_acc = remove_trans_acc(trans_provided)
     am, hp, hn = annotator(opts.annotation)
     chrome_dic = generate_chrome_dic(opts.annotation)
     vcf_reader = vcf.Reader(filename=opts.file_in)
@@ -211,7 +207,7 @@ def serial_annotate(opts):
                 record_hgvs_list.append('.|.|.')
                 record_hgvs_normalise_list.append('.|.|.')
                 continue
-            trans = select_trans(trans_related, trans_provided_no_acc)
+            trans = select_trans(trans_related, trans_provided_no_acc, opts.how)
             if len(trans) == 0:
                 logging.warning('{chrome} {start} {stop} {ref} {call} {g} no related transcripts in UTA.'.format(**locals()))
                 record_hgvs_list.append(g+'|.|.')
@@ -244,12 +240,8 @@ def serial_annotate(opts):
     vcf_writer.close()
 
 
-def serial_annotate_to_bed(opts):
+def serial_annotate_to_bed(opts, trans_provided_no_acc):
     # 串行注释, 生成bed格式
-    config_dic = yaml_read(opts.config)
-    trans_df = pd.read_csv(config_dic['Transcript'], sep='\t', header=None)
-    trans_provided = trans_df[0].values.tolist()
-    trans_provided_no_acc = remove_trans_acc(trans_provided)
     fp = create_annotate_result(opts.file_out)
     am, hp, hn = annotator(opts.annotation)
     chrome_dic = generate_chrome_dic(opts.annotation)
@@ -286,7 +278,7 @@ def serial_annotate_to_bed(opts):
                 error = str(e)
                 logging.error('{chrome} {start} {stop} {ref} {call} {g} annotate error. {error}.'.format(**locals()))
                 continue
-            trans = select_trans(trans_related, trans_provided_no_acc)
+            trans = select_trans(trans_related, trans_provided_no_acc, opts.how)
             if len(trans) == 0:
                 logging.warning('{chrome} {start} {stop} {ref} {call} {g} no related transcripts in UTA.'.format(**locals()))
             for tran in trans:
@@ -303,7 +295,7 @@ def serial_annotate_to_bed(opts):
     fp.close()
 
 
-def process_record(records, results, annotation, trans_provided):
+def process_record(records, results, annotation, trans_provided, how):
     # 一个进程创建uta连接， 从records队列里获取数据, 注释结果返回到results队列, 适用输出为vcf格式
     am, hp, hn = annotator(annotation)
     while True:
@@ -331,7 +323,7 @@ def process_record(records, results, annotation, trans_provided):
                     record_hgvs_list.append('.|.|.')
                     record_hgvs_normalise_list.append('.|.|.')
                     continue
-                trans = select_trans(trans_related, trans_provided)
+                trans = select_trans(trans_related, trans_provided, how)
                 if len(trans) == 0:
                     logging.warning('{chrome} {start} {stop} {ref} {call} {g} no related transcripts in UTA.'.format(**locals()))
                     record_hgvs_list.append(g + '|.|.')
@@ -364,7 +356,7 @@ def process_record(records, results, annotation, trans_provided):
             break
 
 
-def process_record_to_bed(records, results, annotation, trans_provided):
+def process_record_to_bed(records, results, annotation, trans_provided, how):
     # 一个进程创建uta连接， 从records队列里获取数据, 注释结果返回到results队列, 适用输出为bed格式
     am, hp, hn = annotator(annotation)
     while True:
@@ -384,7 +376,7 @@ def process_record_to_bed(records, results, annotation, trans_provided):
                 error = str(e)
                 logging.error('{chrome} {start} {stop} {ref} {call} {g} annotate error. {error}.'.format(**locals()))
                 continue
-            trans = select_trans(trans_related, trans_provided)
+            trans = select_trans(trans_related, trans_provided, how)
             if len(trans) == 0:
                 logging.warning('{chrome} {start} {stop} {ref} {call} {g} no related transcripts in UTA.'.format(**locals()))
                 continue
@@ -403,13 +395,9 @@ def process_record_to_bed(records, results, annotation, trans_provided):
             break
 
 
-def parallel_annotate(opts, process_num):
+def parallel_annotate(opts, process_num, trans_provided_no_acc):
     # 并行注释
     chrome_dic = generate_chrome_dic(opts.annotation)
-    config_dic = yaml_read(opts.config)
-    trans_df = pd.read_csv(config_dic['Transcript'], sep='\t', header=None)
-    trans_provided = trans_df[0].values.tolist()
-    trans_provided_no_acc = remove_trans_acc(trans_provided)
     # 创建队列, 初始化
     records, results = Queue(100*process_num), Queue()
     input_finished = False
@@ -419,7 +407,7 @@ def parallel_annotate(opts, process_num):
     processes = list()
     # 开启多个进程监听队列, 注释
     for i in range(process_num):
-        p = Process(target=process_record, args=(records, results, opts.annotation, trans_provided_no_acc))
+        p = Process(target=process_record, args=(records, results, opts.annotation, trans_provided_no_acc, opts.how))
         processes.append(p)
         p.start()
     # 读取vcf信息, 写入新的vcf
@@ -487,24 +475,16 @@ def parallel_annotate(opts, process_num):
     vcf_writer.close()
 
 
-def parallel_annotate_to_bed(opts, process_num):
+def parallel_annotate_to_bed(opts, process_num, trans_provided_no_acc):
     # 并行注释, 输出bed格式结果
     chrome_dic = generate_chrome_dic(opts.annotation)
-    config_dic = yaml_read(opts.config)
-    # header_df = pd.read_csv(config_dic['Header'], sep='\t', header=None)
-    # header_list = header_df[0].values.tolist()
-    trans_df = pd.read_csv(config_dic['Transcript'], sep='\t', header=None)
-    trans_provided = trans_df[0].values.tolist()
-    trans_provided_no_acc = remove_trans_acc(trans_provided)
     fp = create_annotate_result(opts.file_out)
-    # df = pd.DataFrame(columns=header_list)
-    # df.to_csv(opts.file_out, sep='\t', index=False)
     records, results = Queue(100*process_num), Queue()
     input_finished = False
     output_finished = False
     processes = list()
     for i in range(process_num):
-        p = Process(target=process_record_to_bed, args=(records, results, opts.annotation, trans_provided_no_acc))
+        p = Process(target=process_record_to_bed, args=(records, results, opts.annotation, trans_provided_no_acc, opts.how))
         processes.append(p)
         p.start()
     vcf_reader = vcf.Reader(filename=opts.file_in)
@@ -551,8 +531,6 @@ def parallel_annotate_to_bed(opts, process_num):
             except queue.Empty:
                 break
             if result != 'END':
-                # result_df = pd.DataFrame(result._asdict(), index=[0])
-                # result_df.to_csv(opts.file_out, sep='\t', index=False, header=False, mode='a')
                 write_annotate_result(fp, result)
             else:
                 output_finished = True
@@ -570,12 +548,20 @@ def main():
     parser.add_option('-c', dest='config', help='config file', default=None, metavar='file')
     parser.add_option('-a', dest='annotation', help='annotation', default='GRCh37', metavar='string')
     parser.add_option('-p', dest='processes', help='process num', default=1, type=int)
+    parser.add_option('--how', dest='how', help='how to select trans', default='all', metavar='string')
     (opts, args) = parser.parse_args()
+    if opts.config is None:
+        trans_provided_no_acc = list()
+    else:
+        config_dic = yaml_read(opts.config)
+        trans_df = pd.read_csv(config_dic['Transcript'], sep='\t', header=None)
+        trans_provided = trans_df[0].values.tolist()
+        trans_provided_no_acc = remove_trans_acc(trans_provided)
     process_num = min(opts.processes, cpu_count())
     if opts.out_type == 'vcf':
-        serial_annotate(opts) if process_num == 1 else parallel_annotate(opts, process_num)
+        serial_annotate(opts, trans_provided_no_acc) if process_num == 1 else parallel_annotate(opts, process_num, trans_provided_no_acc)
     else:
-        serial_annotate_to_bed(opts) if process_num == 1 else parallel_annotate_to_bed(opts, process_num)
+        serial_annotate_to_bed(opts, trans_provided_no_acc) if process_num == 1 else parallel_annotate_to_bed(opts, process_num, trans_provided_no_acc)
 
 
 if __name__ == '__main__':
