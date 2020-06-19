@@ -395,7 +395,7 @@ def process_record_to_bed(records, results, annotation, trans_provided, how):
             break
 
 
-def parallel_annotate(opts, process_num, trans_provided_no_acc):
+def parallel_annotate(opts, trans_provided_no_acc, process_num):
     # 并行注释
     chrome_dic = generate_chrome_dic(opts.annotation)
     # 创建队列, 初始化
@@ -475,7 +475,7 @@ def parallel_annotate(opts, process_num, trans_provided_no_acc):
     vcf_writer.close()
 
 
-def parallel_annotate_to_bed(opts, process_num, trans_provided_no_acc):
+def parallel_annotate_to_bed(opts, trans_provided_no_acc, process_num):
     # 并行注释, 输出bed格式结果
     chrome_dic = generate_chrome_dic(opts.annotation)
     fp = create_annotate_result(opts.file_out)
@@ -559,9 +559,9 @@ def main():
         trans_provided_no_acc = remove_trans_acc(trans_provided)
     process_num = min(opts.processes, cpu_count())
     if opts.out_type == 'vcf':
-        serial_annotate(opts, trans_provided_no_acc) if process_num == 1 else parallel_annotate(opts, process_num, trans_provided_no_acc)
+        serial_annotate(opts, trans_provided_no_acc) if process_num == 1 else parallel_annotate(opts, trans_provided_no_acc, process_num)
     else:
-        serial_annotate_to_bed(opts, trans_provided_no_acc) if process_num == 1 else parallel_annotate_to_bed(opts, process_num, trans_provided_no_acc)
+        serial_annotate_to_bed(opts, trans_provided_no_acc) if process_num == 1 else parallel_annotate_to_bed(opts, trans_provided_no_acc, process_num)
 
 
 if __name__ == '__main__':
