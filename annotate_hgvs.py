@@ -193,8 +193,13 @@ def serial_annotate(opts, trans_provided_no_acc):
                     call = '.'
                 else:
                     var_type = 'delins'
-                    ref = record.REF[1:]
-                    call = str(alt)[1:]
+                    if record.REF[0] == str(alt)[0]:
+                        ref = record.REF[1:]
+                        call = str(alt)[1:]
+                    else:
+                        ref = record.REF
+                        call = str(alt)
+                        start = record.affected_start - 1
             record_parser = VariantRecord(chrome, start, stop, ref, call, var_type)
             g = generate_g(record_parser, chrome_dic)
             try:
@@ -266,8 +271,13 @@ def serial_annotate_to_bed(opts, trans_provided_no_acc):
                     call = '.'
                 else:
                     var_type = 'delins'
-                    ref = record.REF[1:]
-                    call = str(alt)[1:]
+                    if record.REF[0] == str(alt)[0]:
+                        ref = record.REF[1:]
+                        call = str(alt)[1:]
+                    else:
+                        ref = record.REF
+                        call = str(alt)
+                        start = record.affected_start - 1
             record_parser = VariantRecord(chrome, start, stop, ref, call, var_type)
             g = generate_g(record_parser, chrome_dic)
             try:
@@ -441,8 +451,13 @@ def parallel_annotate(opts, trans_provided_no_acc, process_num):
                             call = '.'
                         else:
                             var_type = 'delins'
-                            ref = record.REF[1:]
-                            call = str(alt)[1:]
+                            if record.REF[0] == str(alt)[0]:
+                                ref = record.REF[1:]
+                                call = str(alt)[1:]
+                            else:
+                                ref = record.REF
+                                call = str(alt)
+                                start = record.affected_start - 1
                     record_parser = VariantRecord(chrome, start, stop, ref, call, var_type)
                     g = generate_g(record_parser, chrome_dic)
                     record_infos.append((record_parser, g))
@@ -511,8 +526,13 @@ def parallel_annotate_to_bed(opts, trans_provided_no_acc, process_num):
                             call = '.'
                         else:
                             var_type = 'delins'
-                            ref = record.REF[1:]
-                            call = str(alt)[1:]
+                            if record.REF[0] == str(alt)[0]:
+                                ref = record.REF[1:]
+                                call = str(alt)[1:]
+                            else:
+                                ref = record.REF
+                                call = str(alt)
+                                start = record.affected_start - 1
                     record_parser = VariantRecord(chrome, start, stop, ref, call, var_type)
                     g = generate_g(record_parser, chrome_dic)
                     records.put((record_parser, g))
