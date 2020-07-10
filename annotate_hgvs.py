@@ -95,6 +95,7 @@ def generate_chrome_dic(annotation) -> dict:
     chromes_chr = ['chr' + m if m != 'MT' else 'chrM_NC_012920.1' for m in chromes]
     for n, chrome in enumerate(chromes_chr):
         chrome_dic[chrome] = nc[n]
+    chrome_dic['chrMT'] = 'NC_012920.1'
     return chrome_dic
 
 
@@ -110,19 +111,23 @@ def annotator(annotation):
 def generate_g(record_parser, chrome_dic):
     # vcf record 转成 g
     chrome = chrome_dic[record_parser.chrome]
+    if record_parser.chrome.__contains__('M'):
+        dna = 'm'
+    else:
+        dna = 'g'
     if record_parser.var_type == 'snv':
-        g = chrome + ':g.' + str(record_parser.stop) + record_parser.ref + '>' + record_parser.call
+        g = chrome + ':' + dna + '.' + str(record_parser.stop) + record_parser.ref + '>' + record_parser.call
     elif record_parser.var_type == 'del':
         start = record_parser.start + 1
         if start == record_parser.stop:
-            g = chrome + ':g.' + str(record_parser.stop) + 'del'
+            g = chrome + ':' + dna + '.' + str(record_parser.stop) + 'del'
         else:
-            g = chrome + ':g.' + str(start) + '_' + str(record_parser.stop) + 'del'
+            g = chrome + ':' + dna + '.' + str(start) + '_' + str(record_parser.stop) + 'del'
     elif record_parser.var_type == 'delins':
         start = record_parser.start + 1
-        g = chrome + ':g.' + str(start) + '_' + str(record_parser.stop) + 'delins' + record_parser.call
+        g = chrome + ':' + dna + '.' + str(start) + '_' + str(record_parser.stop) + 'delins' + record_parser.call
     else:
-        g = chrome + ':g.' + str(record_parser.start) + '_' + str(record_parser.start+1) + 'ins' + record_parser.call
+        g = chrome + ':' + dna + '.' + str(record_parser.start) + '_' + str(record_parser.start+1) + 'ins' + record_parser.call
     return g
 
 
@@ -203,7 +208,7 @@ def serial_annotate(opts, trans_provided_no_acc):
             record_parser = VariantRecord(chrome, start, stop, ref, call, var_type)
             g = generate_g(record_parser, chrome_dic)
             try:
-                g_parser = hp.parse_g_variant(g)
+                g_parser = hp.parse_hgvs_variant(g)
                 g_normalise = hn.normalize(g_parser)
                 trans_related = am.relevant_transcripts(g_parser)
             except (HGVSParseError, HGVSError, HGVSUsageError) as e:
@@ -281,7 +286,7 @@ def serial_annotate_to_bed(opts, trans_provided_no_acc):
             record_parser = VariantRecord(chrome, start, stop, ref, call, var_type)
             g = generate_g(record_parser, chrome_dic)
             try:
-                g_parser = hp.parse_g_variant(g)
+                g_parser = hp.parse_hgvs_variant(g)
                 g_normalise = hn.normalize(g_parser)
                 trans_related = am.relevant_transcripts(g_parser)
             except (HGVSParseError, HGVSError, HGVSUsageError) as e:
@@ -324,7 +329,7 @@ def process_record(records, results, annotation, trans_provided, how):
                 hgvs_list = list()
                 hgvs_normalise_list = list()
                 try:
-                    g_parser = hp.parse_g_variant(g)
+                    g_parser = hp.parse_hgvs_variant(g)
                     g_normalise = hn.normalize(g_parser)
                     trans_related = am.relevant_transcripts(g_parser)
                 except (HGVSParseError, HGVSError, HGVSUsageError) as e:
@@ -379,7 +384,7 @@ def process_record_to_bed(records, results, annotation, trans_provided, how):
             g = record[1]
             chrome, start, stop, ref, call, var_type = record_parser.chrome, record_parser.start, record_parser.stop, record_parser.ref, record_parser.call, record_parser.var_type
             try:
-                g_parser = hp.parse_g_variant(g)
+                g_parser = hp.parse_hgvs_variant(g)
                 g_normalise = hn.normalize(g_parser)
                 trans_related = am.relevant_transcripts(g_parser)
             except (HGVSParseError, HGVSError, HGVSUsageError) as e:
