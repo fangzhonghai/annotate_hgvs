@@ -2,6 +2,7 @@
 from vcf.parser import _Info as VcfInfo, field_counts as vcf_field_counts
 from hgvs.exceptions import HGVSError, HGVSParseError, HGVSUsageError
 from multiprocessing import Queue, Process, cpu_count
+from bioutils.assemblies import make_name_ac_map
 from hgvs.assemblymapper import AssemblyMapper
 from hgvs.dataproviders.uta import connect
 from hgvs.normalizer import Normalizer
@@ -79,23 +80,36 @@ def select_trans(trans_related, trans_provided, how) -> list:
     return trans_selected
 
 
+# def generate_chrome_dic(annotation) -> dict:
+#     # 染色体对应关系字典, GRCh37: chr1 or 1 -> NC_000001.10, GRCh38: chr1 or 1 -> NC_000001.11
+#     chrome_dic = dict()
+#     if annotation == 'GRCh37':
+#         nc_suffix = ['01.10', '02.11', '03.11', '04.11', '05.9', '06.11', '07.13', '08.10', '09.11', '10.10', '11.9', '12.11', '13.10',
+#                      '14.8', '15.9', '16.9', '17.10', '18.9', '19.9', '20.10', '21.8', '22.10', '23.10', '24.9']
+#     else:
+#         nc_suffix = ['01.11', '02.12', '03.12', '04.12', '05.10', '06.12', '07.14', '08.11', '09.12', '10.11', '11.10', '12.12', '13.11',
+#                      '14.9', '15.10', '16.10', '17.11', '18.10', '19.10', '20.11', '21.9', '22.11', '23.11', '24.10']
+#     nc = ['NC_0000' + i for i in nc_suffix] + ['NC_012920.1']
+#     chromes = [str(j) for j in range(1, 23)] + ['X', 'Y', 'MT']
+#     for k, chrome in enumerate(chromes):
+#         chrome_dic[chrome] = nc[k]
+#     chromes_chr = ['chr' + m if m != 'MT' else 'chrM_NC_012920.1' for m in chromes]
+#     for n, chrome in enumerate(chromes_chr):
+#         chrome_dic[chrome] = nc[n]
+#     chrome_dic['chrMT'] = 'NC_012920.1'
+#     return chrome_dic
+
+
 def generate_chrome_dic(annotation) -> dict:
     # 染色体对应关系字典, GRCh37: chr1 or 1 -> NC_000001.10, GRCh38: chr1 or 1 -> NC_000001.11
-    chrome_dic = dict()
-    if annotation == 'GRCh37':
-        nc_suffix = ['01.10', '02.11', '03.11', '04.11', '05.9', '06.11', '07.13', '08.10', '09.11', '10.10', '11.9', '12.11', '13.10',
-                     '14.8', '15.9', '16.9', '17.10', '18.9', '19.9', '20.10', '21.8', '22.10', '23.10', '24.9']
-    else:
-        nc_suffix = ['01.11', '02.12', '03.12', '04.12', '05.10', '06.12', '07.14', '08.11', '09.12', '10.11', '11.10', '12.12', '13.11',
-                     '14.9', '15.10', '16.10', '17.11', '18.10', '19.10', '20.11', '21.9', '22.11', '23.11', '24.10']
-    nc = ['NC_0000' + i for i in nc_suffix] + ['NC_012920.1']
-    chromes = [str(j) for j in range(1, 23)] + ['X', 'Y', 'MT']
-    for k, chrome in enumerate(chromes):
-        chrome_dic[chrome] = nc[k]
-    chromes_chr = ['chr' + m if m != 'MT' else 'chrM_NC_012920.1' for m in chromes]
-    for n, chrome in enumerate(chromes_chr):
-        chrome_dic[chrome] = nc[n]
-    chrome_dic['chrMT'] = 'NC_012920.1'
+    chrome_dic = make_name_ac_map(annotation)
+    chromes = [str(j) for j in range(1, 23)] + ['X', 'Y']
+    for chrome in chromes:
+        chrome_dic['chr'+chrome] = chrome_dic[chrome]
+    if 'MT' not in chrome_dic:
+        chrome_dic['MT'] = 'NC_012920.1'
+    chrome_dic['chrMT'] = chrome_dic['MT']
+    chrome_dic['chrM_NC_012920.1'] = chrome_dic['MT']
     return chrome_dic
 
 
