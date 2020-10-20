@@ -80,6 +80,32 @@ def select_trans(trans_related, trans_provided, how) -> list:
     return trans_selected
 
 
+def bgi_anno_select_trans(trans_related, trans_provided, how) -> list:
+    # UTA中相关的转录本与所提供的选择最新的版本, 若未提供或无交集选择查询UTA得到的第一个转录本
+    if len(trans_related) == 0:
+        return []
+    if len(trans_provided) == 0 and how == 'first':
+        return [trans_related[0]]
+    elif len(trans_provided) == 0 and how != 'first':
+        return trans_related
+    trans_selected = list(set(trans_related) & set(trans_provided))
+    # trans_related_no_acc = remove_trans_acc(trans_related)
+    # trans_no_acc_overlap = set(trans_related_no_acc) & set(trans_provided)
+    # if len(trans_no_acc_overlap) == 0 and how == 'first':
+    #     return [trans_related[0]]
+    # elif len(trans_no_acc_overlap) == 0 and how != 'first':
+    #     return []
+    # trans_filter = [tran for tran_overlap in trans_no_acc_overlap for tran in trans_related if tran.startswith(tran_overlap + '.')]
+    # trans_filter = get_sorted_trans_acc(trans_filter)
+    # trans_selected = list()
+    # for tran_overlap in trans_no_acc_overlap:
+    #     for tran in trans_filter:
+    #         if tran.startswith(tran_overlap + '.'):
+    #             trans_selected.append(tran)
+    #             break
+    return trans_selected
+
+
 # def generate_chrome_dic(annotation) -> dict:
 #     # 染色体对应关系字典, GRCh37: chr1 or 1 -> NC_000001.10, GRCh38: chr1 or 1 -> NC_000001.11
 #     chrome_dic = dict()
@@ -118,8 +144,38 @@ def annotator(annotation):
     hdp = connect()
     am = AssemblyMapper(hdp, assembly_name=annotation, alt_aln_method='splign', replace_reference=True)
     hp = Parser()
-    hn = Normalizer(hdp)
-    return am, hp, hn
+    hn3 = Normalizer(hdp, shuffle_direction=3)
+    hn5 = Normalizer(hdp, shuffle_direction=5)
+    return am, hp, hn3, hn5, hdp
+
+
+def get_transcript_strand(opts, hdp, g, tran):
+    if opts.rule_3 == 'transcript':
+        nc = str(g.split(':')[0])
+        tx_exons = hdp.get_tx_exons(tran, nc, 'splign')
+        strand = tx_exons[0][4]
+        if strand == 1:
+            return 3
+        elif strand == -1:
+            return 5
+        else:
+            return 3
+    else:
+        return 3
+
+
+def judge_var_type(ref, call):
+    if ref == '.':
+        var_type = 'ins'
+    elif call == '.':
+        var_type = 'del'
+    elif ref != '.' and call != '.' and len(ref) == 1 and len(call) == 1 and ref != call:
+        var_type = 'snv'
+    elif ref != '.' and call != '.' and (len(ref) > 1 or len(call) > 1) and ref != call:
+        var_type = 'delins'
+    else:
+        var_type = 'ref'
+    return var_type
 
 
 def generate_g(record_parser, chrome_dic):
@@ -140,6 +196,11 @@ def generate_g(record_parser, chrome_dic):
     elif record_parser.var_type == 'delins':
         start = record_parser.start + 1
         g = chrome + ':' + dna + '.' + str(start) + '_' + str(record_parser.stop) + 'delins' + record_parser.call
+    elif record_parser.var_type == 'ref':
+        if len(record_parser.ref) == 1 and len(record_parser.call) == 1:
+            g = chrome + ':' + dna + '.' + str(record_parser.stop) + record_parser.ref + '>' + record_parser.call
+        else:
+            g = '.'
     else:
         g = chrome + ':' + dna + '.' + str(record_parser.start) + '_' + str(record_parser.start+1) + 'ins' + record_parser.call
     return g
@@ -182,7 +243,7 @@ VariantRecord = namedtuple('VariantRecord', ['chrome', 'start', 'stop', 'ref', '
 
 def serial_annotate(opts, trans_provided_no_acc):
     # 串行注释, 生成vcf格式
-    am, hp, hn = annotator(opts.annotation)
+    am, hp, hn3, hn5, hdp = annotator(opts.annotation)
     chrome_dic = generate_chrome_dic(opts.annotation)
     vcf_reader = vcf.Reader(filename=opts.file_in)
     vcf_reader.infos['HGVS'] = VcfInfo('HGVS', vcf_field_counts['A'], 'String', 'VCF record alleles in HGVS syntax', version=None, source=None)
@@ -223,7 +284,8 @@ def serial_annotate(opts, trans_provided_no_acc):
             g = generate_g(record_parser, chrome_dic)
             try:
                 g_parser = hp.parse_hgvs_variant(g)
-                g_normalise = hn.normalize(g_parser)
+                g_normalise_3 = hn3.normalize(g_parser)
+                g_normalise_5 = hn5.normalize(g_parser)
                 trans_related = am.relevant_transcripts(g_parser)
             except (HGVSParseError, HGVSError, HGVSUsageError) as e:
                 error = str(e)
@@ -235,22 +297,27 @@ def serial_annotate(opts, trans_provided_no_acc):
             if len(trans) == 0:
                 logging.warning('{chrome} {start} {stop} {ref} {call} {g} no related transcripts in UTA.'.format(**locals()))
                 record_hgvs_list.append(g+'|.|.')
-                record_hgvs_normalise_list.append(str(g_normalise)+'|.|.')
+                record_hgvs_normalise_list.append(str(g_normalise_3)+'|.|.')
                 continue
             for tran in trans:
                 try:
                     t = am.g_to_t(g_parser, tran)
+                    strand = get_transcript_strand(opts, hdp, g, tran)
+                    if strand == 3:
+                        g_normalise = g_normalise_3
+                    else:
+                        g_normalise = g_normalise_5
                     t_normalise = am.g_to_t(g_normalise, tran)
                     p = am.t_to_p(t)
                     p_normalise = am.t_to_p(t_normalise)
-                    hgvs = '|'.join([g, str(t), str(p)])
+                    hgvs_ = '|'.join([g, str(t), str(p)])
                     hgvs_normalise = '|'.join([str(g_normalise), str(t_normalise), str(p_normalise)])
                 except (HGVSError, HGVSUsageError, NotImplementedError, IndexError) as e:
                     error = str(e)
                     logging.error('{chrome} {start} {stop} {ref} {call} {tran} {g} annotate error. {error}.'.format(**locals()))
-                    hgvs = '|'.join([g, '.', '.'])
-                    hgvs_normalise = '|'.join([str(g_normalise), '.', '.'])
-                hgvs_list.append(hgvs)
+                    hgvs_ = '|'.join([g, '.', '.'])
+                    hgvs_normalise = '|'.join([str(g_normalise_3), '.', '.'])
+                hgvs_list.append(hgvs_)
                 hgvs_normalise_list.append(hgvs_normalise)
             hgvs_alt = '/'.join(hgvs_list)
             hgvs_normalise_alt = '/'.join(hgvs_normalise_list)
@@ -267,7 +334,7 @@ def serial_annotate(opts, trans_provided_no_acc):
 def serial_annotate_to_bed(opts, trans_provided_no_acc):
     # 串行注释, 生成bed格式
     fp = create_annotate_result(opts.file_out)
-    am, hp, hn = annotator(opts.annotation)
+    am, hp, hn3, hn5, hdp = annotator(opts.annotation)
     chrome_dic = generate_chrome_dic(opts.annotation)
     vcf_reader = vcf.Reader(filename=opts.file_in)
     for record in vcf_reader:
@@ -301,7 +368,8 @@ def serial_annotate_to_bed(opts, trans_provided_no_acc):
             g = generate_g(record_parser, chrome_dic)
             try:
                 g_parser = hp.parse_hgvs_variant(g)
-                g_normalise = hn.normalize(g_parser)
+                g_normalise_3 = hn3.normalize(g_parser)
+                g_normalise_5 = hn5.normalize(g_parser)
                 trans_related = am.relevant_transcripts(g_parser)
             except (HGVSParseError, HGVSError, HGVSUsageError) as e:
                 error = str(e)
@@ -313,6 +381,11 @@ def serial_annotate_to_bed(opts, trans_provided_no_acc):
             for tran in trans:
                 try:
                     t = am.g_to_t(g_parser, tran)
+                    strand = get_transcript_strand(opts, hdp, g, tran)
+                    if strand == 3:
+                        g_normalise = g_normalise_3
+                    else:
+                        g_normalise = g_normalise_5
                     t_normalise = am.g_to_t(g_normalise, tran)
                     p = am.t_to_p(t)
                     p_normalise = am.t_to_p(t_normalise)
@@ -324,9 +397,9 @@ def serial_annotate_to_bed(opts, trans_provided_no_acc):
     fp.close()
 
 
-def process_record(records, results, annotation, trans_provided, how):
+def process_record(records, results, opts, trans_provided):
     # 一个进程创建uta连接， 从records队列里获取数据, 注释结果返回到results队列, 适用输出为vcf格式
-    am, hp, hn = annotator(annotation)
+    am, hp, hn3, hn5, hdp = annotator(opts.annotation)
     while True:
         try:
             record = records.get(False)
@@ -344,7 +417,8 @@ def process_record(records, results, annotation, trans_provided, how):
                 hgvs_normalise_list = list()
                 try:
                     g_parser = hp.parse_hgvs_variant(g)
-                    g_normalise = hn.normalize(g_parser)
+                    g_normalise_3 = hn3.normalize(g_parser)
+                    g_normalise_5 = hn5.normalize(g_parser)
                     trans_related = am.relevant_transcripts(g_parser)
                 except (HGVSParseError, HGVSError, HGVSUsageError) as e:
                     error = str(e)
@@ -352,26 +426,31 @@ def process_record(records, results, annotation, trans_provided, how):
                     record_hgvs_list.append('.|.|.')
                     record_hgvs_normalise_list.append('.|.|.')
                     continue
-                trans = select_trans(trans_related, trans_provided, how)
+                trans = select_trans(trans_related, trans_provided, opts.how)
                 if len(trans) == 0:
                     logging.warning('{chrome} {start} {stop} {ref} {call} {g} no related transcripts in UTA.'.format(**locals()))
                     record_hgvs_list.append(g + '|.|.')
-                    record_hgvs_normalise_list.append(str(g_normalise) + '|.|.')
+                    record_hgvs_normalise_list.append(str(g_normalise_3) + '|.|.')
                     continue
                 for tran in trans:
                     try:
                         t = am.g_to_t(g_parser, tran)
+                        strand = get_transcript_strand(opts, hdp, g, tran)
+                        if strand == 3:
+                            g_normalise = g_normalise_3
+                        else:
+                            g_normalise = g_normalise_5
                         t_normalise = am.g_to_t(g_normalise, tran)
                         p = am.t_to_p(t)
                         p_normalise = am.t_to_p(t_normalise)
-                        hgvs = '|'.join([g, str(t), str(p)])
+                        hgvs_ = '|'.join([g, str(t), str(p)])
                         hgvs_normalise = '|'.join([str(g_normalise), str(t_normalise), str(p_normalise)])
                     except (HGVSError, HGVSUsageError, NotImplementedError, IndexError) as e:
                         error = str(e)
                         logging.error('{chrome} {start} {stop} {ref} {call} {tran} {g} annotate error. {error}.'.format(**locals()))
-                        hgvs = '|'.join([g, '.', '.'])
-                        hgvs_normalise = '|'.join([str(g_normalise), '.', '.'])
-                    hgvs_list.append(hgvs)
+                        hgvs_ = '|'.join([g, '.', '.'])
+                        hgvs_normalise = '|'.join([str(g_normalise_3), '.', '.'])
+                    hgvs_list.append(hgvs_)
                     hgvs_normalise_list.append(hgvs_normalise)
                 hgvs_alt = '/'.join(hgvs_list)
                 hgvs_normalise_alt = '/'.join(hgvs_normalise_list)
@@ -385,9 +464,9 @@ def process_record(records, results, annotation, trans_provided, how):
             break
 
 
-def process_record_to_bed(records, results, annotation, trans_provided, how):
+def process_record_to_bed(records, results, opts, trans_provided):
     # 一个进程创建uta连接， 从records队列里获取数据, 注释结果返回到results队列, 适用输出为bed格式
-    am, hp, hn = annotator(annotation)
+    am, hp, hn3, hn5, hdp = annotator(opts.annotation)
     while True:
         try:
             record = records.get(False)
@@ -399,19 +478,25 @@ def process_record_to_bed(records, results, annotation, trans_provided, how):
             chrome, start, stop, ref, call, var_type = record_parser.chrome, record_parser.start, record_parser.stop, record_parser.ref, record_parser.call, record_parser.var_type
             try:
                 g_parser = hp.parse_hgvs_variant(g)
-                g_normalise = hn.normalize(g_parser)
+                g_normalise_3 = hn3.normalize(g_parser)
+                g_normalise_5 = hn5.normalize(g_parser)
                 trans_related = am.relevant_transcripts(g_parser)
             except (HGVSParseError, HGVSError, HGVSUsageError) as e:
                 error = str(e)
                 logging.error('{chrome} {start} {stop} {ref} {call} {g} annotate error. {error}.'.format(**locals()))
                 continue
-            trans = select_trans(trans_related, trans_provided, how)
+            trans = select_trans(trans_related, trans_provided, opts.how)
             if len(trans) == 0:
                 logging.warning('{chrome} {start} {stop} {ref} {call} {g} no related transcripts in UTA.'.format(**locals()))
                 continue
             for tran in trans:
                 try:
                     t = am.g_to_t(g_parser, tran)
+                    strand = get_transcript_strand(opts, hdp, g, tran)
+                    if strand == 3:
+                        g_normalise = g_normalise_3
+                    else:
+                        g_normalise = g_normalise_5
                     t_normalise = am.g_to_t(g_normalise, tran)
                     p = am.t_to_p(t)
                     p_normalise = am.t_to_p(t_normalise)
@@ -436,7 +521,7 @@ def parallel_annotate(opts, trans_provided_no_acc, process_num):
     processes = list()
     # 开启多个进程监听队列, 注释
     for i in range(process_num):
-        p = Process(target=process_record, args=(records, results, opts.annotation, trans_provided_no_acc, opts.how))
+        p = Process(target=process_record, args=(records, results, opts, trans_provided_no_acc))
         processes.append(p)
         p.start()
     # 读取vcf信息, 写入新的vcf
@@ -518,7 +603,7 @@ def parallel_annotate_to_bed(opts, trans_provided_no_acc, process_num):
     output_finished = False
     processes = list()
     for i in range(process_num):
-        p = Process(target=process_record_to_bed, args=(records, results, opts.annotation, trans_provided_no_acc, opts.how))
+        p = Process(target=process_record_to_bed, args=(records, results, opts, trans_provided_no_acc))
         processes.append(p)
         p.start()
     vcf_reader = vcf.Reader(filename=opts.file_in)
@@ -579,17 +664,171 @@ def parallel_annotate_to_bed(opts, trans_provided_no_acc, process_num):
     fp.close()
 
 
+def bgianno_serial_annotate(opts, trans_provided):
+    # 串行注释, 生成bed格式
+    fp = create_annotate_result(opts.file_out)
+    am, hp, hn3, hn5, hdp = annotator(opts.annotation)
+    chrome_dic = generate_chrome_dic(opts.annotation)
+    if opts.file_format == 'excel':
+        df = pd.read_excel(opts.file_in, skiprows=opts.skip_rows)
+    else:
+        df = pd.read_csv(opts.file_in, sep='\t', low_memory=False, skiprows=opts.skip_rows, dtype={'#Chr': str})
+    df.rename(columns={'#Chr': 'Chr'}, inplace=True)
+    for record in df.itertuples():
+        chrome = getattr(record, 'Chr')
+        start = getattr(record, 'Start')
+        stop = getattr(record, 'Stop')
+        ref = getattr(record, 'Ref')
+        call = getattr(record, 'Call')
+        var_type = judge_var_type(ref, call)
+        record_parser = VariantRecord(chrome, start, stop, ref, call, var_type)
+        g = generate_g(record_parser, chrome_dic)
+        try:
+            g_parser = hp.parse_hgvs_variant(g)
+            g_normalise_3 = hn3.normalize(g_parser)
+            g_normalise_5 = hn5.normalize(g_parser)
+            trans_related = am.relevant_transcripts(g_parser)
+        except (HGVSParseError, HGVSError, HGVSUsageError) as e:
+            error = str(e)
+            logging.error('{chrome} {start} {stop} {ref} {call} {g} annotate error. {error}.'.format(**locals()))
+            continue
+        trans = bgi_anno_select_trans(trans_related, trans_provided, opts.how)
+        if len(trans) == 0:
+            logging.warning('{chrome} {start} {stop} {ref} {call} {g} no related transcripts in UTA.'.format(**locals()))
+        for tran in trans:
+            try:
+                t = am.g_to_t(g_parser, tran)
+                strand = get_transcript_strand(opts, hdp, g, tran)
+                if strand == 3:
+                    g_normalise = g_normalise_3
+                else:
+                    g_normalise = g_normalise_5
+                t_normalise = am.g_to_t(g_normalise, tran)
+                p = am.t_to_p(t)
+                p_normalise = am.t_to_p(t_normalise)
+                record_annotation = RecordAnnotation(chrome, start, stop, ref, call, var_type, str(t), str(t_normalise), str(p), str(p_normalise))
+                write_annotate_result(fp, record_annotation)
+            except (HGVSError, HGVSUsageError, NotImplementedError, IndexError) as e:
+                error = str(e)
+                logging.error('{chrome} {start} {stop} {ref} {call} {tran} {g} annotate error. {error}.'.format(**locals()))
+    fp.close()
+
+
+def bgi_anno_process_record(records, results, opts, trans_provided):
+    # 一个进程创建uta连接， 从records队列里获取数据, 注释结果返回到results队列, 适用输出为bed格式
+    am, hp, hn3, hn5, hdp = annotator(opts.annotation)
+    while True:
+        try:
+            record = records.get(False)
+        except queue.Empty:
+            continue
+        if record != 'END':
+            record_parser = record[0]
+            g = record[1]
+            chrome, start, stop, ref, call, var_type = record_parser.chrome, record_parser.start, record_parser.stop, record_parser.ref, record_parser.call, record_parser.var_type
+            try:
+                g_parser = hp.parse_hgvs_variant(g)
+                g_normalise_3 = hn3.normalize(g_parser)
+                g_normalise_5 = hn5.normalize(g_parser)
+                trans_related = am.relevant_transcripts(g_parser)
+            except (HGVSParseError, HGVSError, HGVSUsageError) as e:
+                error = str(e)
+                logging.error('{chrome} {start} {stop} {ref} {call} {g} annotate error. {error}.'.format(**locals()))
+                continue
+            trans = bgi_anno_select_trans(trans_related, trans_provided, opts.how)
+            if len(trans) == 0:
+                logging.warning('{chrome} {start} {stop} {ref} {call} {g} no related transcripts in UTA.'.format(**locals()))
+                continue
+            for tran in trans:
+                try:
+                    t = am.g_to_t(g_parser, tran)
+                    strand = get_transcript_strand(opts, hdp, g, tran)
+                    if strand == 3:
+                        g_normalise = g_normalise_3
+                    else:
+                        g_normalise = g_normalise_5
+                    t_normalise = am.g_to_t(g_normalise, tran)
+                    p = am.t_to_p(t)
+                    p_normalise = am.t_to_p(t_normalise)
+                    results.put(RecordAnnotation(chrome, start, stop, ref, call, var_type, str(t), str(t_normalise), str(p), str(p_normalise)))
+                except (HGVSError, HGVSUsageError, NotImplementedError, IndexError) as e:
+                    error = str(e)
+                    logging.error('{chrome} {start} {stop} {ref} {call} {tran} {g} annotate error. {error}.'.format(**locals()))
+        else:
+            records.put('END')
+            break
+
+
+def bgianno_parallel_annotate(opts, trans_provided, process_num):
+    # 并行注释, 输出bed格式结果
+    chrome_dic = generate_chrome_dic(opts.annotation)
+    fp = create_annotate_result(opts.file_out)
+    records, results = Queue(100*process_num), Queue()
+    input_finished = False
+    output_finished = False
+    processes = list()
+    for i in range(process_num):
+        p = Process(target=bgi_anno_process_record, args=(records, results, opts, trans_provided))
+        processes.append(p)
+        p.start()
+    if opts.file_format == 'excel':
+        df = pd.read_excel(opts.file_in, skiprows=opts.skip_rows)
+    else:
+        df = pd.read_csv(opts.file_in, sep='\t', low_memory=False, skiprows=opts.skip_rows, dtype={'#Chr': str})
+    df.rename(columns={'#Chr': 'Chr'}, inplace=True)
+    while True:
+        while not records.full() and not input_finished:
+            try:
+                record = next(df.itertuples())
+                chrome = getattr(record, 'Chr')
+                start = getattr(record, 'Start')
+                stop = getattr(record, 'Stop')
+                ref = getattr(record, 'Ref')
+                call = getattr(record, 'Call')
+                var_type = judge_var_type(ref, call)
+                record_parser = VariantRecord(chrome, start, stop, ref, call, var_type)
+                g = generate_g(record_parser, chrome_dic)
+                records.put((record_parser, g))
+            except StopIteration:
+                input_finished = True
+                records.put('END')
+                break
+        processes_status = list()
+        for p in processes:
+            processes_status.append(p.is_alive())
+        if True not in processes_status:
+            results.put('END')
+        while True:
+            try:
+                result = results.get(False)
+            except queue.Empty:
+                break
+            if result != 'END':
+                write_annotate_result(fp, result)
+            else:
+                output_finished = True
+                break
+        if output_finished:
+            break
+    fp.close()
+
+
 def main():
     parser = optparse.OptionParser()
     parser.add_option('-i', dest='file_in', help='input file', default=None, metavar='file')
     parser.add_option('-o', dest='file_out', help='output file', default=None, metavar='file')
-    parser.add_option('-t', dest='out_type', help='output file type, default=vcf', default='vcf', metavar='string')
+    parser.add_option('--it', dest='input_type', help='input file type, vcf or bed', default='vcf', metavar='string')
+    parser.add_option('--ot', dest='out_type', help='output file type, vcf or bed', default='vcf', metavar='string')
     parser.add_option('-c', dest='config', help='config file', default=None, metavar='file')
-    parser.add_option('-a', dest='annotation', help='annotation, default=GRCh37', default='GRCh37', metavar='string')
-    parser.add_option('-p', dest='processes', help='process num, default=1', default=1, type=int, metavar='int')
-    parser.add_option('--how', dest='how', help='how to select trans, default=all', default='all', metavar='string')
+    parser.add_option('-a', dest='annotation', help='annotation', default='GRCh37', metavar='string')
+    parser.add_option('-p', dest='processes', help='process num', default=1, type=int, metavar='int')
+    parser.add_option('--how', dest='how', help='how to select trans', default='all', metavar='string')
+    parser.add_option('--rule_3', dest='rule_3', help='3\' rule', default='transcript', metavar='string')
+    parser.add_option('--format', dest='file_format', help='file format', default='excel', metavar='string')
+    parser.add_option('-k', dest='skip_rows', help='skip rows', default=0, type=int, metavar='int')
     (opts, args) = parser.parse_args()
     if opts.config is None:
+        trans_provided = list()
         trans_provided_no_acc = list()
     else:
         config_dic = yaml_read(opts.config)
@@ -597,10 +836,13 @@ def main():
         trans_provided = trans_df[0].values.tolist()
         trans_provided_no_acc = remove_trans_acc(trans_provided)
     process_num = min(opts.processes, cpu_count())
-    if opts.out_type == 'vcf':
-        serial_annotate(opts, trans_provided_no_acc) if process_num == 1 else parallel_annotate(opts, trans_provided_no_acc, process_num)
+    if opts.input_type == 'vcf':
+        if opts.out_type == 'vcf':
+            serial_annotate(opts, trans_provided_no_acc) if process_num == 1 else parallel_annotate(opts, trans_provided_no_acc, process_num)
+        else:
+            serial_annotate_to_bed(opts, trans_provided_no_acc) if process_num == 1 else parallel_annotate_to_bed(opts, trans_provided_no_acc, process_num)
     else:
-        serial_annotate_to_bed(opts, trans_provided_no_acc) if process_num == 1 else parallel_annotate_to_bed(opts, trans_provided_no_acc, process_num)
+        bgianno_serial_annotate(opts, trans_provided) if process_num == 1 else bgianno_parallel_annotate(opts, trans_provided, process_num)
 
 
 if __name__ == '__main__':
